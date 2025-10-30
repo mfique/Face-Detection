@@ -1,68 +1,67 @@
 import cv2
+import serial
 import time
-import numpy as np
+
+# === CONFIGURATION ===
+SERIAL_PORT = "COM9"      # <-- change to your Arduino port
+BAUD_RATE = 9600
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
+CENTER_TOLERANCE = 100    # pixels before movement
+
+# === SETUP ===
+ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+time.sleep(2)  # Wait for Arduino to initialize
+
+face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
 
 cap = cv2.VideoCapture(0)
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+cap.set(3, FRAME_WIDTH)
+cap.set(4, FRAME_HEIGHT)
 
-prev_cx, prev_cy = None, None
-prev_time = None
-movement_text = ""
-speed_text = ""
+print("Face tracking starting... Press 'q' to quit.")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
+
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 7, minSize=(120, 120))
 
-    direction, speed = "", 0
-    cx, cy = None, None
-    current_time = time.time()
+    frame_center = FRAME_WIDTH // 2
+    message = "No face detected so far"
+    command = "S"  # stop (still)
+
     if len(faces) > 0:
-        x, y, w, h = faces[0]  # Track the first detected face
-        cx, cy = x + w // 2, y + h // 2
-        # Draw bounding box
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        (x, y, w, h) = max(faces, key=lambda r: r[2]*r[3])
+        cx = x + w // 2
 
-        # Movement & Speed calculations
-        if prev_cx is not None and prev_cy is not None and prev_time is not None:
-            dx = cx - prev_cx
-            dy = cy - prev_cy
-            dt = current_time - prev_time
-            if dt > 0:
-                speed = int(np.sqrt(dx**2 + dy**2) / dt)
-                # Determine direction
-                if abs(dx) > abs(dy):
-                    if dx > 10:
-                        direction = "Right"
-                    elif dx < -10:
-                        direction = "Left"
-                else:
-                    if dy > 10:
-                        direction = "Down"
-                    elif dy < -10:
-                        direction = "Up"
-                if direction == "":
-                    direction = "Stationary"
-                movement_text = f"Dir: {direction}"
-                speed_text = f"Speed: {speed} px/s"
-        prev_cx, prev_cy = cx, cy
-        prev_time = current_time
-    else:
-        movement_text = "No face detected"
-        speed_text = ""
-        prev_cx, prev_cy = None, None
-        prev_time = None
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
+        # cv2.line(frame, (frame_center, 0), (frame_center, FRAME_HEIGHT), (255, 0, 0), 2)
 
-    # Display overlays
-    cv2.putText(frame, movement_text, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-    cv2.putText(frame, speed_text, (10,65), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        if cx < frame_center - CENTER_TOLERANCE:
+            message = "Move left "
+            command = "L"
+        elif cx > frame_center + CENTER_TOLERANCE:
+            message = "Moving right "
+            command = "R"
+        else:
+            message = "Face is still in center"
+            command = "S"  
 
-    cv2.imshow("Face Direction Tracker", frame)
+        cv2.putText(frame, f"Command: {message}", (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0, 0), 2)
+
+        # Send command to Arduino
+        ser.write(command.encode())
+
+    cv2.imshow("Face trackng (Arduino Control)", frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
 cv2.destroyAllWindows()
+ser.close()
